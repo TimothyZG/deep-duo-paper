@@ -1,6 +1,6 @@
 from torchvision import transforms
 
-def get_transforms(dataset_name, resize=224):
+def get_transforms(resize=224):
     # Training transforms for iWildCam with RandAugment
     train_transform = transforms.Compose([
         transforms.Resize((resize, resize)),

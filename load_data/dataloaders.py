@@ -1,8 +1,4 @@
 from .datasets import IWildCamDataset, Caltech256Dataset
-from torchvision.datasets import Caltech256
-from torch.utils.data import DataLoader, random_split
-import torchvision.transforms as T
-import torch
 
 def get_dataloaders(dataset_name, root_dir, batch_size, num_workers, transforms):
     if dataset_name.lower() == 'iwildcam':
