@@ -2,30 +2,30 @@ import pandas as pd
 import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader, TensorDataset
+from torchvision.transforms.functional import to_pil_image
 import os
 import argparse
 import sys
+import torchvision.transforms as T
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from load_models.model_loader import get_model_with_head
 from load_models.TempScaleWrapper import TempScaleWrapper
 
-def generate_toy_loader(transform=None, num_samples=128, num_classes=10, batch_size=32):
+def generate_toy_loader(transform, num_classes=10, num_samples=128, batch_size=32):
     torch.manual_seed(42)
 
-    # Try to get input size from transform (if available)
-    if transform and hasattr(transform, "transforms"):
-        for t in transform.transforms:
-            if isinstance(t, T.Resize):
-                size = t.size if isinstance(t.size, tuple) else (3, t.size, t.size)
-                break
-        else:
-            size = (3, 224, 224)
-    else:
-        size = (3, 224, 224)
+    x = []
+    for _ in range(num_samples):
+        # Simulate a real uint8 image [C, H, W]
+        fake_img = torch.randint(0, 256, (3, 256, 256), dtype=torch.uint8)
+        pil_img = to_pil_image(fake_img)
+        transformed = transform(pil_img)
+        x.append(transformed)
 
-    x = torch.randn(num_samples, *size)
+    x = torch.stack(x)  # [B, C, H, W]
     y = torch.randint(0, num_classes, (num_samples,))
+
     dataset = TensorDataset(x, y)
     return DataLoader(dataset, batch_size=batch_size), num_classes
 
@@ -64,7 +64,7 @@ def main(csv_path):
                 freeze=True,
                 m_head=1
             )
-            loader, _= generate_toy_loader(transform=transform,num_classes=num_classes)
+            loader, _ = generate_toy_loader(transform=transform, num_classes=num_classes)
 
             # Wrap with TempScaleWrapper
             ts_model = TempScaleWrapper(model)

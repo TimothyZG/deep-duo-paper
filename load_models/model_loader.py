@@ -3,6 +3,7 @@ import timm
 import torch.nn.functional as F
 import torch.nn as nn
 from timm.data.transforms_factory import create_transform
+from timm.layers import ClassifierHead
 
 class AverageHeads(nn.Module):
     def forward(self, x):
@@ -58,7 +59,8 @@ def get_model_with_head(
 
     def replace_fc(m, attr_name):
         layer = getattr(m, attr_name)
-
+        def inject_head(in_features):
+            return build_new_head(in_features, num_classes, m_head)
         if isinstance(layer, nn.Sequential):
             for i in reversed(range(len(layer))):
                 if isinstance(layer[i], nn.Linear):
