@@ -1,0 +1,11 @@
+model_name,architecture_family,source,tv_weights
+ConvNeXt_Base,ConvNext,torchvision,"DEFAULT"
+ResNet50,ResNet,torchvision,"IMAGENET1K_V1"
+ResNet50,ResNet,torchvision,"IMAGENET1K_V2"
+ResNet50,ResNet,torchvision,"DEFAULT"
+mobilenetv4_hybrid_large.e600_r384_in1k,MobileNet,timm,"NA"
+nextvit_base.bd_in1k_384,NextViT,timm,"NA"
+regnety_040.ra3_in1k,RegNet,timm,"NA"
+swin_small_patch4_window7_224.ms_in22k,SWIN,timm,"NA"
+Swin_V2_T,SwinV2,torchvision,"DEFAULT"
+ViT_B_16,ViT,torchvision,"IMAGENET1K_SWAG_E2E_V1"
