@@ -26,3 +26,19 @@ def get_transforms(resize=224):
         'val': val_transform,
         'test': val_transform  # Usually same as validation transforms
     }
+
+def augment_then_model_transform(model_transform):
+    vt_transform = transforms.Compose([
+        transforms.Lambda(lambda x: x.convert("RGB")),
+        model_transform
+    ])
+    return {
+        "train": transforms.Compose([
+            transforms.Lambda(lambda x: x.convert("RGB")),
+            transforms.RandAugment(),
+            transforms.RandomHorizontalFlip(p=0.5),
+            model_transform
+        ]),
+        "val": vt_transform,
+        "test": vt_transform
+    }

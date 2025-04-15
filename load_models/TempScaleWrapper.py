@@ -47,6 +47,14 @@ class TempScaleWrapper(nn.Module):
     def predict_with_uncertainty(self, x):
         out = self.forward(x)
         logits = out["logit"]
+        # Try to defer to inner model's uncertainty if available
+        if hasattr(self.model, "predict_with_uncertainty"):
+            return self.model.predict_with_uncertainty(x)
+        # Fallback: compute softmax response as default
         probs = F.softmax(logits, dim=-1)
-        softmax_response = probs.max(dim=-1).values
-        return {"logit": logits, "certainty": softmax_response}
+        preds = probs.argmax(dim=-1)
+        certainty = probs.max(dim=-1).values
+        return {"logit": logits, 
+                "probs": probs,
+                "preds": preds,
+                "uncertainty(softmax_response)": 1-certainty}

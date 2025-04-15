@@ -1,29 +1,26 @@
 import pandas as pd
 import torch
-import torch.nn as nn
 from torch.utils.data import DataLoader, TensorDataset
 from torchvision.transforms.functional import to_pil_image
 import os
 import argparse
 import sys
-import torchvision.transforms as T
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from load_models.model_loader import get_model_with_head
 from load_models.TempScaleWrapper import TempScaleWrapper
 
-def generate_toy_loader(transform, num_classes=10, num_samples=128, batch_size=32):
+def generate_toy_loader(transform, num_classes=10, num_samples=32, batch_size=16):
     torch.manual_seed(42)
 
     x = []
     for _ in range(num_samples):
-        # Simulate a real uint8 image [C, H, W]
         fake_img = torch.randint(0, 256, (3, 256, 256), dtype=torch.uint8)
         pil_img = to_pil_image(fake_img)
         transformed = transform(pil_img)
         x.append(transformed)
 
-    x = torch.stack(x)  # [B, C, H, W]
+    x = torch.stack(x)
     y = torch.randint(0, num_classes, (num_samples,))
 
     dataset = TensorDataset(x, y)
@@ -36,7 +33,9 @@ def collect_logits_and_labels(model, loader, device="cpu"):
     with torch.no_grad():
         for x, y in loader:
             x, y = x.to(device), y.to(device)
-            out = model(x)
+            out = model.predict_with_uncertainty(x)  # 👈 Use this
+            uncert = out["uncertainty(softmax_response)"]
+            print(f"🔍 Sample uncertainty (1 - softmax response): {uncert[:5]}")
             logits = out["logit"]
             if logits.dim() == 3:  # for shallow ensembles
                 logits = logits.mean(dim=1)
@@ -44,6 +43,7 @@ def collect_logits_and_labels(model, loader, device="cpu"):
             all_labels.append(y)
 
     return torch.cat(all_logits), torch.cat(all_labels)
+
 
 def main(csv_path):
     had_error = False  # track any so that tjhe output log has success or failure in its name

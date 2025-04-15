@@ -1,15 +1,14 @@
 from torchvision import models as tv_models
 import timm
-import torch.nn.functional as F
 import torch.nn as nn
 from timm.data.transforms_factory import create_transform
 from timm.layers import ClassifierHead
+import sys
+import os
 
-class AverageHeads(nn.Module):
-    def forward(self, x):
-        # x has shape [batch_size, m_head, num_classes]
-        x = F.softmax(x, dim=-1)
-        return x.mean(dim=1)  
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from load_models.transforms import augment_then_model_transform
+
     
 def get_model_with_head(
     model_name: str,
@@ -36,10 +35,10 @@ def get_model_with_head(
         else:
             weights = None
         model = model_fn(weights=weights)
-        transform = weights.transforms() if weights is not None else None
+        model_transform = weights.transforms() if weights is not None else None
     elif source == "timm":
         model = timm.create_model(model_name, pretrained=True)
-        transform = create_transform(**timm.data.resolve_data_config({}, model=model))
+        model_transform = create_transform(**timm.data.resolve_data_config({}, model=model))
     else:
         raise ValueError(f"Currently only support source = 'torchvision' or 'timm', received invalid source {source}")
 
@@ -52,7 +51,6 @@ def get_model_with_head(
             return nn.Sequential(
                 nn.Linear(in_features, num_classes * m_head),
                 nn.Unflatten(1, (m_head, num_classes)),
-                AverageHeads()
             )
         else:
             return nn.Linear(in_features, num_classes)
@@ -98,4 +96,5 @@ def get_model_with_head(
     elif hasattr(model, "heads") and hasattr(model.heads, "head"):
         replace_fc(model.heads, "head")
 
+    transform=augment_then_model_transform(model_transform)
     return model, transform

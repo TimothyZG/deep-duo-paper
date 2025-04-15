@@ -1,0 +1,6 @@
+training:
+  batch_size: 32
+  num_epochs_lp: 5
+  num_epochs_ff: 25
+  num_workers: 4
+  warmup_epochs: 5

@@ -18,6 +18,7 @@ class BaseDataset(Dataset):
 class NoMetaDataset(Dataset):
     def __init__(self, base_dataset):
         self.base_dataset = base_dataset
+        self.collate = getattr(base_dataset, "collate", None)
 
     def __len__(self):
         return len(self.base_dataset)
@@ -25,34 +26,31 @@ class NoMetaDataset(Dataset):
     def __getitem__(self, idx):
         x, y, *_ = self.base_dataset[idx]
         return x, y
+
     
 class IWildCamDataset(BaseDataset):
+    num_classes = 182
     def __init__(self, root_dir, download=True):
         super().__init__('iwildcam', root_dir, download)
+        # self.num_classes = self.dataset.n_classes
 
     def get_splits(self, transforms, batch_size, num_workers):
-        # Get the data subsets
-        train_data = NoMetaDataset(self.dataset.get_subset('train', transform=transforms['train']))
-        val_data = NoMetaDataset(self.dataset.get_subset('id_val', transform=transforms['val']))
-        test_data = NoMetaDataset(self.dataset.get_subset('id_test', transform=transforms['test']))
-        ood_test_data = NoMetaDataset(self.dataset.get_subset('test', transform=transforms['test']))
-        # Create data loaders
-        train_loader = get_train_loader('standard', train_data, batch_size=batch_size, num_workers=num_workers)
-        val_loader = get_eval_loader('standard', val_data, batch_size=batch_size, num_workers=num_workers)
-        test_loader = get_eval_loader('standard', test_data, batch_size=batch_size, num_workers=num_workers)
-        ood_test_loader = get_eval_loader('standard', ood_test_data, batch_size=batch_size, num_workers=num_workers)
-
+        def wrap(subset, transform):
+            orig = self.dataset.get_subset(subset, transform=transform)
+            return NoMetaDataset(orig)
         return {
-            'train': train_loader,
-            'val': val_loader,
-            'test': test_loader,
-            'ood_test': ood_test_loader
+            "train": get_train_loader('standard', wrap('train', transforms['train']), batch_size=batch_size, num_workers=num_workers),
+            "val": get_eval_loader('standard', wrap('id_val', transforms['val']), batch_size=batch_size, num_workers=num_workers),
+            "test": get_eval_loader('standard', wrap('id_test', transforms['test']), batch_size=batch_size, num_workers=num_workers),
+            "ood_test": get_eval_loader('standard', wrap('test', transforms['test']), batch_size=batch_size, num_workers=num_workers),
         }
 
 class Caltech256Dataset(Dataset):
+    num_classes = 257
     def __init__(self, root_dir, download=False):
         self.root_dir = root_dir
         self.download = download
+        # self.num_classes=257
 
     def get_splits(self, transforms, batch_size, num_workers,train_perc = 0.7,val_perc = 0.15):
         full_dataset = Caltech256(root=self.root_dir, transform=None, download=self.download)
