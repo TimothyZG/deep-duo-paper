@@ -26,3 +26,5 @@ env/
 
 Data
 ray_results
+
+checkpoints
