@@ -3,3 +3,4 @@ training:
   num_epochs_lp: 5
   num_epochs_ff: 10
   num_workers: 4
+  grace_period: 8

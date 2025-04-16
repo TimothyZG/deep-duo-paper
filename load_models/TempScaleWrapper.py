@@ -16,6 +16,8 @@ class TempScaleWrapper(nn.Module):
     def calibrate_temperature(self, logits: torch.Tensor, labels: torch.Tensor) -> float:
         """Calibrates temperature using grid search + LBFGS refinement."""
         # Fasr grid search for temperature
+        original_nll = F.cross_entropy(logits, labels).item()
+        print(f"NLL before temperature scaling = {original_nll:.4f}")
         best_nll = float("inf")
         best_T = 1.0
 
@@ -41,7 +43,9 @@ class TempScaleWrapper(nn.Module):
         T_refined = temp_tensor.detach().item()
         self.temperature.data.copy_(temp_tensor.data)
 
+        final_nll = F.cross_entropy(logits / T_refined, labels).item()
         print(f"Refined T = {T_refined:.4f}")
+        print(f"NLL after temperature scaling = {final_nll:.4f}")
         return T_refined
     
     def predict_with_uncertainty(self, x):

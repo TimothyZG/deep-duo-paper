@@ -1,3 +1,0 @@
-model_name,architecture_family,source,tv_weights
-ConvNeXt_Base,ConvNext,torchvision,"DEFAULT"
-mobilenetv4_hybrid_large.e600_r384_in1k,MobileNet,timm,,

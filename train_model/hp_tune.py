@@ -6,11 +6,14 @@ import torch.nn as nn
 import torch.optim as optim
 from ray import tune
 from ray.tune.schedulers import ASHAScheduler
+from ray.tune import CLIReporter
 from ray.air import session, Checkpoint
 from sklearn.metrics import f1_score, accuracy_score
 from torch.optim.lr_scheduler import SequentialLR, LinearLR, CosineAnnealingLR
 import wandb
 import shutil
+import re
+import csv
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from load_models.model_loader import get_model_with_head
@@ -35,6 +38,7 @@ def train_model(config, root_dir, dataset_name, device, model_state=None, finetu
         model.load_state_dict(model_state)
 
     if finetune:
+        os.environ["WANDB_HTTP_TIMEOUT"] = "120"
         wandb.init(project=f"{dataset_name}-{config['model_name']}", config=config, reinit=True)
 
     dataloaders = get_dataloaders(
@@ -115,6 +119,11 @@ def main():
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     validation_metric = "val_metric"
 
+    reporter = CLIReporter(
+        parameter_columns=['learning_rate', 'weight_decay'],
+        metric_columns=[validation_metric, 'training_iteration'],
+        max_report_frequency=900
+    )
     #################### Linear Probing ####################
     config_lp = {
         "model_name": args.model_name,
@@ -140,7 +149,8 @@ def main():
         resources_per_trial={"cpu": 4, "gpu": 1},
         scheduler=ASHAScheduler(max_t=config_lp["num_epochs"],grace_period=config_lp["num_epochs"],metric=validation_metric, mode="max"),
         local_dir="ray_results",
-        name="lp_search"
+        name="lp_search",
+        progress_reporter=reporter
     )
     best_trial = result.get_best_trial(validation_metric, "max")
     print(f"Best LP metric: {best_trial.last_result[validation_metric]:.4f}")
@@ -148,7 +158,7 @@ def main():
     with best_checkpoint.as_directory() as checkpoint_dir:
         model_path = os.path.join(checkpoint_dir, "model.pth")
         best_state = torch.load(model_path)
-        lp_checkpoint_dst = f"checkpoints/{args.dataset_name}/{args.model_name}_lp.pth"
+        lp_checkpoint_dst = f"checkpoints/{args.dataset_name}/lp/{args.model_name}.pth"
         os.makedirs(os.path.dirname(lp_checkpoint_dst), exist_ok=True)
         shutil.copy(model_path, lp_checkpoint_dst)
         print(f"✅ Saved best LP model to: {lp_checkpoint_dst}")
@@ -156,11 +166,12 @@ def main():
     #################### Finetune ####################
     config_ft = {
         "model_name": args.model_name,
-        "learning_rate": tune.loguniform(1e-6, 1e-4),
+        "learning_rate": tune.loguniform(1e-6, 3e-4),
         "weight_decay": tune.loguniform(1e-8, 1e-5),
         "batch_size": training_cfg["training"]["batch_size"],
         "num_epochs": training_cfg["training"]["num_epochs_ff"],
         "num_workers": training_cfg["training"]["num_workers"],
+        "grace_period": training_cfg["training"]["grace_period"],
         "warmup_epochs": training_cfg["training"]["warmup_epochs"],
         "source": args.source,
         "tv_weights": args.tv_weights,
@@ -178,21 +189,83 @@ def main():
         config=config_ft,
         num_samples=args.num_samples,
         resources_per_trial={"cpu": 4, "gpu": 1},
-        scheduler=ASHAScheduler(max_t=config_ft["num_epochs"],grace_period=config_ft["num_epochs"],metric=validation_metric, mode="max"),
+        scheduler=ASHAScheduler(max_t=config_ft["num_epochs"],grace_period=config_ft["grace_period"],metric=validation_metric, mode="max"),
         local_dir="ray_results",
-        name="ff_search"
+        name="ff_search",
+        progress_reporter=reporter,
+        raise_on_failed_trial=False,
+        fail_fast=False
     )
-    ft_best_trial = ft_result.get_best_trial(validation_metric, "max")
-    print(f"Best FT metric: {ft_best_trial.last_result[validation_metric]:.4f}")
+    
+    # Filter successful trials
+    successful_trials = [t for t in ft_result.trials if t.status == "TERMINATED" and t.checkpoint]
+    failed_trials = [t for t in ft_result.trials if t not in successful_trials]
+
+    print(f"✅ {len(successful_trials)} successful trials")
+    print(f"❌ {len(failed_trials)} failed trials")
+
+    if not successful_trials:
+        print("⚠️ No successful trials found. Skipping checkpoint and soup saving.")
+        return
+
+    ft_best_trial = max(successful_trials, key=lambda t: t.last_result.get(validation_metric, float("-inf")))
+    print(f"🏆 Best FT metric: {ft_best_trial.last_result[validation_metric]:.4f}")
 
     ft_best_checkpoint = ft_result.get_best_checkpoint(ft_best_trial, metric=validation_metric, mode="max")
     with ft_best_checkpoint.as_directory() as checkpoint_dir:
         model_path = os.path.join(checkpoint_dir, "model.pth")
         best_state = torch.load(model_path)
-        ft_checkpoint_dst = f"checkpoints/{args.dataset_name}/{args.model_name}_ff.pth"
+        ft_checkpoint_dst = f"checkpoints/{args.dataset_name}/ff/{args.model_name}.pth"
         os.makedirs(os.path.dirname(ft_checkpoint_dst), exist_ok=True)
         shutil.copy(model_path, ft_checkpoint_dst)
         print(f"✅ Saved best FF model to: {ft_checkpoint_dst}")
         
+    soup_dir = f"checkpoints/{args.dataset_name}/soup/{args.model_name}"
+    os.makedirs(soup_dir, exist_ok=True)
+    existing = {
+        int(re.search(r"(\d+)\.pth$", f).group(1))
+        for f in os.listdir(soup_dir) if f.endswith(".pth") and re.search(r"\d+\.pth$", f)
+    }
+    def get_next_index():
+        i = 0
+        while i in existing:
+            i += 1
+        existing.add(i)
+        return i
+
+    csv_path = os.path.join(soup_dir, f"{args.model_name}_trials.csv")
+    write_header = not os.path.exists(csv_path)
+    with open(csv_path, mode="a", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=[
+            "model_name", "idx","trial_id", "learning_rate", "weight_decay",
+            "batch_size", "val_metric", "checkpoint_path"
+        ])
+        if write_header:
+            writer.writeheader()
+
+        # Save each trial's best checkpoint
+        for trial in ft_result.trials:
+            if trial.status != "TERMINATED" or not trial.checkpoint:
+                continue
+            checkpoint = ft_result.get_best_checkpoint(trial, metric=validation_metric, mode="max")
+            if checkpoint:
+                with checkpoint.as_directory() as checkpoint_dir:
+                    model_path = os.path.join(checkpoint_dir, "model.pth")
+                    idx = get_next_index()
+                    soup_path = os.path.join(soup_dir, f"trial{idx}.pth")
+                    shutil.copy(model_path, soup_path)
+                    print(f"✅ Saved trial checkpoint to: {soup_path}")
+
+                    writer.writerow({
+                        "model_name": args.model_name,
+                        "idx": idx,
+                        "trial_id": trial.trial_id,
+                        "learning_rate": trial.config["learning_rate"],
+                        "weight_decay": trial.config["weight_decay"],
+                        "batch_size": trial.config["batch_size"],
+                        "val_metric": trial.last_result[validation_metric],
+                        "checkpoint_path": soup_path
+                    })
+
 if __name__ == "__main__":
     main()

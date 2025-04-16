@@ -47,13 +47,18 @@ def get_model_with_head(
             param.requires_grad = False
 
     def build_new_head(in_features, num_classes, m_head):
+        def enable_grad(m):
+            for p in m.parameters():
+                p.requires_grad = True
+            return m
         if m_head > 1:
-            return nn.Sequential(
+            return enable_grad(nn.Sequential(
                 nn.Linear(in_features, num_classes * m_head),
                 nn.Unflatten(1, (m_head, num_classes)),
-            )
+            ))
         else:
-            return nn.Linear(in_features, num_classes)
+            return enable_grad(nn.Linear(in_features, num_classes))
+
 
     def replace_fc(m, attr_name):
         layer = getattr(m, attr_name)
