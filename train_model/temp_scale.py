@@ -5,6 +5,7 @@ import sys
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from load_models.TempScaleWrapper import TempScaleWrapper
 from load_models.model_loader import get_model_with_head
+from load_data.dataloaders import get_dataset_class
 import argparse
 
 def main():
@@ -15,13 +16,14 @@ def main():
     parser.add_argument("--dataset_dir", type=str, required=True)
     parser.add_argument("--save_path", type=str, required=True)
     parser.add_argument("--source", type=str, default="torchvision")
+    parser.add_argument("--keep_imagenet_head", action="store_true", help="Keep the original ImageNet head")
     args = parser.parse_args()
+    print(f"✔️ keep_imagenet_head = {args.keep_imagenet_head}")
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     # 1. Load dataset
-    from load_data.datasets import IWildCamDataset, Caltech256Dataset
-    dataset_cls = IWildCamDataset if args.dataset_name.lower() == 'iwildcam' else Caltech256Dataset
+    dataset_cls = get_dataset_class(args.dataset_name.lower())
     dataset = dataset_cls(args.dataset_dir)
     num_classes = dataset.num_classes
     
@@ -30,7 +32,8 @@ def main():
         model_name=args.model_name,
         num_classes=num_classes,
         source=args.source,
-        freeze=False
+        freeze=False,
+        keep_imagenet_head=args.keep_imagenet_head
     )
     model.load_state_dict(torch.load(args.model_path, map_location=device))
     model.eval()

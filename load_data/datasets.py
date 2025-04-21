@@ -153,20 +153,3 @@ class ImageNetV2Dataset(Dataset):
             "ood_test": None,
         }
     
-# Works but slower
-# class IWildCamDataset (BaseDataset):
-#     num_classes = 182
-#     def __init__(self, root_dir, download=True):
-#         super().__init__('iwildcam', root_dir, download)
-#         # self.num_classes = self.dataset.n_classes
-
-#     def get_splits(self, transforms, batch_size, num_workers):
-#         def wrap(subset, transform):
-#             orig = self.dataset.get_subset(subset, transform=transform)
-#             return NoMetaDataset(orig)
-#         return {
-#             "train": get_train_loader('standard', wrap('train', transforms['train']), batch_size=batch_size, num_workers=num_workers),
-#             "val": get_eval_loader('standard', wrap('id_val', transforms['val']), batch_size=batch_size, num_workers=num_workers),
-#             "test": get_eval_loader('standard', wrap('id_test', transforms['test']), batch_size=batch_size, num_workers=num_workers),
-#             "ood_test": get_eval_loader('standard', wrap('test', transforms['test']), batch_size=batch_size, num_workers=num_workers),
-#         }

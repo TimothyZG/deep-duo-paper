@@ -18,3 +18,6 @@ def get_dataloaders(dataset_name, root_dir, batch_size, num_workers, transforms)
         batch_size=batch_size,
         num_workers=num_workers
     )
+
+def get_dataset_class(dataset_name):
+    return dataset_classes[dataset_name]

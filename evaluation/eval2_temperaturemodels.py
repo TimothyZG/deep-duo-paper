@@ -11,7 +11,8 @@ from load_models.TempScaleWrapper import TempScaleWrapper
 from load_data.dataloaders import get_dataloaders
 from utils.config import load_config
 from utils.uncertainty_metrics import compute_ece, compute_risk_coverage_metrics, evaluate_model, compute_metrics
-from load_data.datasets import IWildCamDataset, Caltech256Dataset
+# from load_data.datasets import IWildCamDataset, Caltech256Dataset
+from load_data.dataloaders import get_dataset_class
 
 def main():
     parser = argparse.ArgumentParser()
@@ -25,7 +26,7 @@ def main():
     args = parser.parse_args()
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    dataset_cls = IWildCamDataset if args.dataset_name.lower() == 'iwildcam' else Caltech256Dataset
+    dataset_cls = get_dataset_class(args.dataset_name.lower())
     num_classes = dataset_cls.num_classes
     
     model_file_name = args.model_name if args.model_type=="standard" else f"{args.model_name}_{args.model_type.split('_')[0]}"

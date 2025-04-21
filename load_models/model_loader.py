@@ -16,7 +16,8 @@ def get_model_with_head(
     source: str = "torchvision",  # or 'timm'
     tv_weights: str = "DEFAULT",
     freeze: bool = True,
-    m_head: int = 1
+    m_head: int = 1,
+    keep_imagenet_head=False
 ):
     if source == "torchvision":
         model_name = model_name.lower()
@@ -89,9 +90,10 @@ def get_model_with_head(
         else:
             print(f"Warning: Attribute '{attr_name}' is not a Linear or Sequential layer. Got {type(layer)}")
 
-
+    if keep_imagenet_head:
+        pass # Keep Original Head
     # Handle naming conventions
-    if hasattr(model, "classifier"):
+    elif hasattr(model, "classifier"):
         replace_fc(model, "classifier")
     elif hasattr(model, "fc"):
         replace_fc(model, "fc")
