@@ -18,7 +18,6 @@ def get_model_with_head(
     freeze: bool = True,
     m_head: int = 1
 ):
-    print(f"Creating Model {model_name} from {source} with {m_head} head (1 is default, >1 is shallow ensemble)")
     if source == "torchvision":
         model_name = model_name.lower()
         model_fn = getattr(tv_models, model_name)
@@ -77,13 +76,13 @@ def get_model_with_head(
             in_features = layer.in_features
             new_head = build_new_head(in_features, num_classes, m_head)
             setattr(m, attr_name, new_head)
-            print(f"Replaced {attr_name} with new head:\n{new_head}")
+            # print(f"Replaced {attr_name} with new head:\n{new_head}")
             
         elif isinstance(layer, ClassifierHead):
             if isinstance(layer.fc, nn.Linear):
                 in_features = layer.fc.in_features
                 layer.fc = inject_head(in_features)
-                print(f"Replaced ClassifierHead.fc in '{attr_name}' with new head:\n{layer.fc}")
+                # print(f"Replaced ClassifierHead.fc in '{attr_name}' with new head:\n{layer.fc}")
             else:
                 print(f"Warning: ClassifierHead.fc is not a Linear layer")
 

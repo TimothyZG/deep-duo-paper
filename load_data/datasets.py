@@ -1,7 +1,7 @@
 from wilds import get_dataset
 from wilds.common.data_loaders import get_train_loader, get_eval_loader
 from torch.utils.data import Dataset
-from torchvision.datasets import Caltech256
+from torchvision.datasets import Caltech256, ImageNet, ImageFolder
 from torch.utils.data import DataLoader
 import torch
 
@@ -27,22 +27,42 @@ class NoMetaDataset(Dataset):
         x, y, *_ = self.base_dataset[idx]
         return x, y
 
+def get_custom_loader(
+    wilds_dataset,
+    split: str,
+    transform,
+    batch_size: int,
+    num_workers: int,
+    shuffle: bool = False,
+    drop_last: bool = False,
+):
+    subset = wilds_dataset.get_subset(split, transform=transform)
+
+    return DataLoader(
+        NoMetaDataset(subset),
+        batch_size=batch_size,
+        num_workers=num_workers,
+        shuffle=shuffle,
+        pin_memory=True,
+        prefetch_factor=4,
+        persistent_workers=True,
+        drop_last=drop_last,
+        collate_fn=getattr(subset, "collate", None)
+    )
     
-class IWildCamDataset(BaseDataset):
+# Works but slow
+class IWildCamDataset (BaseDataset):
     num_classes = 182
     def __init__(self, root_dir, download=True):
         super().__init__('iwildcam', root_dir, download)
         # self.num_classes = self.dataset.n_classes
 
     def get_splits(self, transforms, batch_size, num_workers):
-        def wrap(subset, transform):
-            orig = self.dataset.get_subset(subset, transform=transform)
-            return NoMetaDataset(orig)
         return {
-            "train": get_train_loader('standard', wrap('train', transforms['train']), batch_size=batch_size, num_workers=num_workers),
-            "val": get_eval_loader('standard', wrap('id_val', transforms['val']), batch_size=batch_size, num_workers=num_workers),
-            "test": get_eval_loader('standard', wrap('id_test', transforms['test']), batch_size=batch_size, num_workers=num_workers),
-            "ood_test": get_eval_loader('standard', wrap('test', transforms['test']), batch_size=batch_size, num_workers=num_workers),
+            "train": get_custom_loader(self.dataset, "train", transforms["train"], batch_size, num_workers, shuffle=True),
+            "val": get_custom_loader(self.dataset, "id_val", transforms["val"], batch_size, num_workers),
+            "test": get_custom_loader(self.dataset, "id_test", transforms["test"], batch_size, num_workers),
+            "ood_test": get_custom_loader(self.dataset, "test", transforms["test"], batch_size, num_workers),
         }
 
 class Caltech256Dataset(Dataset):
@@ -70,8 +90,83 @@ class Caltech256Dataset(Dataset):
         test_dataset.dataset.transform = transforms["test"]
 
         return {
-            "train": DataLoader(train_dataset, batch_size=batch_size, num_workers=num_workers, shuffle=True),
-            "val": DataLoader(val_dataset, batch_size=batch_size, num_workers=num_workers, shuffle=False),
-            "test": DataLoader(test_dataset, batch_size=batch_size, num_workers=num_workers, shuffle=False),
+            "train": DataLoader(train_dataset, batch_size=batch_size, num_workers=num_workers, shuffle=True,
+                                pin_memory=True,prefetch_factor=4,
+                              persistent_workers=True,drop_last=True,),
+            "val": DataLoader(val_dataset, batch_size=batch_size, num_workers=num_workers, shuffle=False,
+                                pin_memory=True,prefetch_factor=4,),
+            "test": DataLoader(test_dataset, batch_size=batch_size, num_workers=num_workers, shuffle=False,
+                                pin_memory=True,prefetch_factor=4,),
             "ood_test": None,
         }
+        
+class ImageNetDataset(Dataset):
+    num_classes = 1000
+    def __init__(self, root_dir, download=False):
+        self.root_dir = root_dir
+        self.download = download
+    def get_splits(self, transforms, batch_size, num_workers,val_perc = 0.05):
+        full_dataset = ImageNet(self.root_dir, split="val", transform=None)
+        generator = torch.Generator().manual_seed(42)
+        val_size = int(val_perc * len(full_dataset))
+        test_size = len(full_dataset) - val_size
+        splits = torch.utils.data.random_split(
+            full_dataset, [val_size, test_size],
+            generator=generator
+        )
+        val_dataset, test_dataset = splits
+        val_dataset.dataset.transform = transforms["val"]
+        test_dataset.dataset.transform = transforms["test"]
+        return {
+            "train": None,
+            "val": DataLoader(val_dataset,batch_size=batch_size,
+                              shuffle=False,num_workers=num_workers,
+                              pin_memory=True,prefetch_factor=4,
+                              persistent_workers=True,),
+            "test": DataLoader(test_dataset,batch_size=batch_size,
+                               shuffle=False,num_workers=num_workers,
+                               pin_memory=True,prefetch_factor=4,
+                              persistent_workers=True,),
+            "ood_test": None,
+        }
+        
+class ImageNetV2Dataset(Dataset):
+    num_classes = 1000
+    def __init__(self, root_dir, download=False):
+        self.root_dir = root_dir
+        self.download = download
+    def get_splits(self, transforms, batch_size, num_workers):
+        val_dataset = ImageFolder(self.root_dir,None)
+        val_dataset.transform = transforms["test"]
+        val_loader = DataLoader(
+            val_dataset, 
+            batch_size=batch_size, 
+            shuffle=False, 
+            num_workers=num_workers,
+            pin_memory=True,
+            prefetch_factor=4,
+            persistent_workers=True,)
+        return {
+            "train": None,
+            "val": None,
+            "test": val_loader,
+            "ood_test": None,
+        }
+    
+# Works but slower
+# class IWildCamDataset (BaseDataset):
+#     num_classes = 182
+#     def __init__(self, root_dir, download=True):
+#         super().__init__('iwildcam', root_dir, download)
+#         # self.num_classes = self.dataset.n_classes
+
+#     def get_splits(self, transforms, batch_size, num_workers):
+#         def wrap(subset, transform):
+#             orig = self.dataset.get_subset(subset, transform=transform)
+#             return NoMetaDataset(orig)
+#         return {
+#             "train": get_train_loader('standard', wrap('train', transforms['train']), batch_size=batch_size, num_workers=num_workers),
+#             "val": get_eval_loader('standard', wrap('id_val', transforms['val']), batch_size=batch_size, num_workers=num_workers),
+#             "test": get_eval_loader('standard', wrap('id_test', transforms['test']), batch_size=batch_size, num_workers=num_workers),
+#             "ood_test": get_eval_loader('standard', wrap('test', transforms['test']), batch_size=batch_size, num_workers=num_workers),
+#         }

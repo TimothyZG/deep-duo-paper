@@ -1,6 +1,7 @@
 training:
-  batch_size: 32
+  batch_size: 16
   num_epochs_lp: 5
   num_epochs_ff: 10
-  num_workers: 4
-  grace_period: 8
+  num_workers: 8
+  warmup_epochs: 3
+  grace_period: 5
