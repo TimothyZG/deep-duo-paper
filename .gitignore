@@ -24,10 +24,14 @@ env/
 # sh files
 *.sh
 
-Data
-ray_results
+z-Data
+z-ray_results
 
 checkpoints
 configs
 
-logs
+z-logs
+
+y-prediction
+
+evaluation/*.csv

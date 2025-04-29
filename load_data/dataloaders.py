@@ -7,12 +7,12 @@ dataset_classes = {
     'imagenetv2': ImageNetV2Dataset
 }
 
-def get_dataloaders(dataset_name, root_dir, batch_size, num_workers, transforms):
+def get_dataloaders(dataset_name, root_dir, batch_size, num_workers, transforms, ood_root_dir=None):
     dataset_name = dataset_name.lower()
     if dataset_name not in dataset_classes:
         raise ValueError(f"Dataset {dataset_name} not supported.")
     
-    dataset = dataset_classes[dataset_name](root_dir=root_dir)
+    dataset = dataset_classes[dataset_name](root_dir=root_dir,ood_root_dir = ood_root_dir)
     return dataset.get_splits(
         transforms=transforms,
         batch_size=batch_size,
