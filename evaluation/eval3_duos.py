@@ -97,7 +97,7 @@ def main():
             })
 
             eval_suffix = "" if split_name == "test" else "_ood"
-            results_path = f"evaluation/evaluation_duo_{args.dataset_name}{eval_suffix}.csv"
+            results_path = f"evaluation/eval_res/evaluation_duo_{args.dataset_name}{eval_suffix}.csv"
 
             df = pd.DataFrame([metrics])
             if os.path.exists(results_path):
@@ -108,26 +108,6 @@ def main():
             df_all = pd.read_csv(results_path).drop_duplicates()
             df_all.to_csv(results_path, index=False)
             print(f"✅ Evaluation complete. Metrics appended to {results_path}")
-    #     metrics = compute_metrics(results, num_classes)
-    #     metrics.update({
-    #         "mode": mode,
-    #         "model_large": args.model_large_name,
-    #         "model_small": args.model_small_name,
-    #         "wrapper": "DuoWrapper",
-    #         "source_large": args.source_large,
-    #         "source_small": args.source_small,
-    #         "dataset": args.dataset_name,
-    #         "gflops_balance": args.gflops_balance,
-    #         "gflops_large": args.gflops_large,
-    #         "gflops_small": args.gflops_small,
-    #     })
-    #     all_metrics.append(metrics)
-
-
-    # df = pd.DataFrame(all_metrics)
-    # file_exists = os.path.isfile(results_path)
-    # df.to_csv(results_path, mode='a', index=False, header=not file_exists)
-    # print(f"✅ All results saved to {results_path}")
 
 
 if __name__ == "__main__":

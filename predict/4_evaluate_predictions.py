@@ -62,7 +62,7 @@ def main():
     parser.add_argument("--dataset_name", required=True)
     parser.add_argument("--backbone_csv_path", required=True)
     parser.add_argument("--prediction_root_dir", required=True)
-    parser.add_argument("--save_dir", default="evaluation")
+    parser.add_argument("--save_dir", default="evaluation/eval_res")
     args = parser.parse_args()
 
     backbone_df = pd.read_csv(args.backbone_csv_path)

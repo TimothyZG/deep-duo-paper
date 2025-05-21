@@ -14,12 +14,14 @@ import wandb
 import shutil
 import re
 import csv
+import pandas as pd
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from load_models.model_loader import get_model_with_head
 from load_data.dataloaders import get_dataloaders
 from utils.config import load_config
 from load_models.ShallowEnsembleWrapper import ShallowEnsembleWrapper
+
 
 def train_model(config, root_dir, dataset_name, device, model_state=None, finetune=False):
     from load_data.datasets import IWildCamDataset, Caltech256Dataset
@@ -34,21 +36,71 @@ def train_model(config, root_dir, dataset_name, device, model_state=None, finetu
         freeze=not finetune,
         m_head=config.get('m_head', 1)
     )
+    
     if config.get("m_head", 1) > 1:
         model = ShallowEnsembleWrapper(model)
+    
     model.to(device)
-    if model_state:
-        model.load_state_dict(model_state)
 
     if finetune:
         os.environ["WANDB__SERVICE_WAIT"] = "300"
         os.environ["WANDB_HTTP_TIMEOUT"] = "120"
         wandb.init(project=f"{dataset_name}-{config['model_name']}", config=config, reinit=True)
+    if model_state:
+        model.load_state_dict(model_state)
 
-    dataloaders = get_dataloaders(
-        dataset_name, root_dir, config["batch_size"], config["num_workers"], transforms
-    )
     optimizer = optim.AdamW(model.parameters(), lr=config["learning_rate"], weight_decay=config["weight_decay"])
+    criterion = nn.CrossEntropyLoss()
+
+    dataloaders = get_dataloaders(dataset_name, root_dir, batch_size=config.get("batch_size", 128),
+                                  num_workers=config["num_workers"], transforms=transforms)
+
+    # Initialize dataloader iterator
+    train_loader_iter = iter(dataloaders["train"])
+    safe_batch_size = config.get("batch_size", 128)
+
+    # Dynamically adjust batch size on first training batch
+    adjusted = False
+    while not adjusted:
+        try:
+            batch = next(train_loader_iter)
+            x, y = batch
+            x, y = x.to(device), y.to(device)
+
+            optimizer.zero_grad()
+            logits = model(x)
+            loss = criterion(logits, y)
+            loss.backward()
+            optimizer.step()
+
+            adjusted = True  # success, exit loop
+            safe_batch_size //= 2
+            # explicitly set final batch size in config after success
+            config["batch_size"] = safe_batch_size
+            print(f"✅ Batch size adjusted successfully: {safe_batch_size}")
+
+            optimizer = optim.AdamW(model.parameters(), lr=config["learning_rate"], weight_decay=config["weight_decay"])
+            torch.cuda.empty_cache()
+            dataloaders = get_dataloaders(
+                dataset_name, root_dir, batch_size=safe_batch_size,
+                num_workers=config["num_workers"], transforms=transforms
+            )
+            train_loader_iter = iter(dataloaders["train"])
+
+        except RuntimeError as e:
+            print(str(e))
+            print(f"⚠️ OOM at batch_size={safe_batch_size}, reducing batch size...")
+            safe_batch_size //= 2
+            if safe_batch_size < 8:
+                raise RuntimeError("Batch size reduced below minimum threshold.")
+            torch.cuda.empty_cache()
+
+            # Rebuild dataloader with reduced batch size
+            dataloaders = get_dataloaders(
+                dataset_name, root_dir, batch_size=safe_batch_size,
+                num_workers=config["num_workers"], transforms=transforms
+            )
+            train_loader_iter = iter(dataloaders["train"])
 
     if finetune:
         scheduler = SequentialLR(
@@ -62,7 +114,6 @@ def train_model(config, root_dir, dataset_name, device, model_state=None, finetu
     else:
         scheduler = None
 
-    criterion = nn.CrossEntropyLoss()
     best_val_metric = 0
     for epoch in range(config["num_epochs"]):
         model.train()
@@ -96,7 +147,8 @@ def train_model(config, root_dir, dataset_name, device, model_state=None, finetu
                 "val_metric": metric,
                 "epoch": epoch,
                 "train_loss": epoch_loss / len(dataloaders["train"]),
-                "lr": scheduler.get_last_lr()[0]
+                "lr": scheduler.get_last_lr()[0],
+                "final_batch_size": config["batch_size"]
             })
 
         if metric > best_val_metric:
@@ -104,9 +156,10 @@ def train_model(config, root_dir, dataset_name, device, model_state=None, finetu
             checkpoint_path = os.path.join("ray_ckpts", session.get_trial_id())
             os.makedirs(checkpoint_path, exist_ok=True)
             torch.save(model.state_dict(), os.path.join(checkpoint_path, "model.pth"))
-            session.report({"val_metric": metric}, checkpoint=Checkpoint.from_directory(checkpoint_path))
+            session.report({"val_metric": metric,"batch_size": config["batch_size"]}, 
+                           checkpoint=Checkpoint.from_directory(checkpoint_path))
         else:
-            session.report({"val_metric": metric})
+            session.report({"val_metric": metric,"batch_size": config["batch_size"]})
     if finetune: wandb.finish()
 
 def main():
@@ -136,7 +189,6 @@ def main():
         "model_name": args.model_name,
         "learning_rate": tune.loguniform(1e-4, 1e-2),
         "weight_decay": 0,
-        "batch_size": training_cfg["training"]["batch_size"],
         "num_epochs": training_cfg["training"]["num_epochs_lp"],
         "num_workers": training_cfg["training"]["num_workers"],
         "source": args.source,
@@ -155,7 +207,7 @@ def main():
         num_samples=4,
         resources_per_trial={"cpu": 4, "gpu": 1},
         scheduler=ASHAScheduler(max_t=config_lp["num_epochs"],grace_period=config_lp["num_epochs"],metric=validation_metric, mode="max"),
-        local_dir="ray_results",
+        local_dir="z-ray_results",
         name="lp_search",
         progress_reporter=reporter,
         log_to_file=True
@@ -163,22 +215,65 @@ def main():
     best_trial = result.get_best_trial(validation_metric, "max")
     print(f"Best LP metric: {best_trial.last_result[validation_metric]:.4f}")
     best_checkpoint = result.get_best_checkpoint(best_trial, metric=validation_metric, mode="max")
-    with best_checkpoint.as_directory() as checkpoint_dir:
-        model_path = os.path.join(checkpoint_dir, "model.pth")
-        best_state = torch.load(model_path)
-        lp_checkpoint_dst = f"checkpoints/{args.dataset_name}/lp/{args.model_name}.pth"
-        if args.m_head>1: 
-            lp_checkpoint_dst=f"checkpoints/{args.dataset_name}/shallow_ensemble_lp/{args.model_name}_{args.m_head}head.pth"
-        os.makedirs(os.path.dirname(lp_checkpoint_dst), exist_ok=True)
-        shutil.copy(model_path, lp_checkpoint_dst)
-        print(f"✅ Saved best LP model to: {lp_checkpoint_dst}")
+
+    optimal_csv_path = f"checkpoints/{args.dataset_name}/optimal_hyperparams_lp.csv"
+    lp_checkpoint_dst = f"checkpoints/{args.dataset_name}/lp/{args.model_name}.pth"
+    if args.m_head > 1: 
+        lp_checkpoint_dst = f"checkpoints/{args.dataset_name}/shallow_ensemble_lp/{args.model_name}_{args.m_head}head.pth"
+
+    os.makedirs(os.path.dirname(lp_checkpoint_dst), exist_ok=True)
+
+    best_metric = best_trial.last_result[validation_metric]
+
+    # Check if existing best is better (by model_name and m_head)
+    overwrite = True
+    if os.path.exists(optimal_csv_path):
+        df_existing = pd.read_csv(optimal_csv_path)
+        df_existing_model = df_existing[
+            (df_existing["model_name"] == args.model_name) & (df_existing["m_head"] == args.m_head)
+        ]
+        if not df_existing_model.empty:
+            existing_metric = df_existing_model.iloc[0]["val_metric"]
+            overwrite = best_metric > existing_metric
+            if not overwrite:
+                print(f"⚠️ Existing LP ({args.model_name}, m_head={args.m_head}) has better metric ({existing_metric:.4f}), not overwriting.")
+
+    if overwrite:
+        with best_checkpoint.as_directory() as checkpoint_dir:
+            model_path = os.path.join(checkpoint_dir, "model.pth")
+            shutil.copy(model_path, lp_checkpoint_dst)
+            print(f"✅ Saved best LP model to: {lp_checkpoint_dst}")
+        
+        new_record = {
+            "model_name": args.model_name,
+            "learning_rate": best_trial.config["learning_rate"],
+            "weight_decay": best_trial.config["weight_decay"],
+            "batch_size": best_trial.last_result.get("batch_size", -1),
+            "val_metric": best_metric,
+            "checkpoint_path": lp_checkpoint_dst,
+            "m_head": args.m_head,
+        }
+
+        if os.path.exists(optimal_csv_path):
+            # Drop existing record for this model_name and m_head
+            df_existing = df_existing.drop(
+                df_existing[(df_existing["model_name"] == args.model_name) &
+                            (df_existing["m_head"] == args.m_head)].index
+            )
+            optimal_df = pd.concat([df_existing, pd.DataFrame([new_record])], ignore_index=True)
+        else:
+            optimal_df = pd.DataFrame([new_record])
+
+        optimal_df.to_csv(optimal_csv_path, index=False)
+        print(f"✅ Updated optimal LP hyperparams to: {optimal_csv_path}")
+
 
     #################### Finetune ####################
+    best_state = torch.load(lp_checkpoint_dst)
     config_ft = {
         "model_name": args.model_name,
         "learning_rate": tune.loguniform(1e-6, 3e-4),
         "weight_decay": tune.loguniform(1e-8, 1e-5),
-        "batch_size": training_cfg["training"]["batch_size"],
         "num_epochs": training_cfg["training"]["num_epochs_ff"],
         "num_workers": training_cfg["training"]["num_workers"],
         "grace_period": training_cfg["training"]["grace_period"],
@@ -200,7 +295,7 @@ def main():
         num_samples=args.num_samples,
         resources_per_trial={"cpu": 4, "gpu": 1},
         scheduler=ASHAScheduler(max_t=config_ft["num_epochs"],grace_period=config_ft["grace_period"],metric=validation_metric, mode="max"),
-        local_dir="ray_results",
+        local_dir="z-ray_results",
         name="ff_search",
         progress_reporter=reporter,
         raise_on_failed_trial=False,
@@ -223,14 +318,57 @@ def main():
     print(f"🏆 Best FT metric: {ft_best_trial.last_result[validation_metric]:.4f}")
 
     ft_best_checkpoint = ft_result.get_best_checkpoint(ft_best_trial, metric=validation_metric, mode="max")
-    with ft_best_checkpoint.as_directory() as checkpoint_dir:
-        model_path = os.path.join(checkpoint_dir, "model.pth")
-        best_state = torch.load(model_path)
-        ft_checkpoint_dst = f"checkpoints/{args.dataset_name}/ff/{args.model_name}.pth"
-        if args.m_head>1: ft_checkpoint_dst=f"checkpoints/{args.dataset_name}/shallow_ensemble_ff/{args.model_name}_{args.m_head}head.pth"
-        os.makedirs(os.path.dirname(ft_checkpoint_dst), exist_ok=True)
-        shutil.copy(model_path, ft_checkpoint_dst)
-        print(f"✅ Saved best FF model to: {ft_checkpoint_dst}")
+    optimal_csv_path = f"checkpoints/{args.dataset_name}/optimal_hyperparams_ff.csv"
+    ft_checkpoint_dst = f"checkpoints/{args.dataset_name}/ff/{args.model_name}.pth"
+    if args.m_head > 1: 
+        ft_checkpoint_dst = f"checkpoints/{args.dataset_name}/shallow_ensemble_ff/{args.model_name}_{args.m_head}head.pth"
+
+    os.makedirs(os.path.dirname(ft_checkpoint_dst), exist_ok=True)
+
+    best_metric = ft_best_trial.last_result[validation_metric]
+
+    # Check if existing best is better (by model_name and m_head)
+    overwrite = True
+    if os.path.exists(optimal_csv_path):
+        df_existing = pd.read_csv(optimal_csv_path)
+        df_existing_model = df_existing[
+            (df_existing["model_name"] == args.model_name) & (df_existing["m_head"] == args.m_head)
+        ]
+        if not df_existing_model.empty:
+            existing_metric = df_existing_model.iloc[0]["val_metric"]
+            overwrite = best_metric > existing_metric
+            if not overwrite:
+                print(f"⚠️ Existing FF ({args.model_name}, m_head={args.m_head}) has better metric ({existing_metric:.4f}), not overwriting.")
+
+    if overwrite:
+        with ft_best_checkpoint.as_directory() as checkpoint_dir:
+            model_path = os.path.join(checkpoint_dir, "model.pth")
+            shutil.copy(model_path, ft_checkpoint_dst)
+            print(f"✅ Saved best FF model to: {ft_checkpoint_dst}")
+        
+        new_record = {
+            "model_name": args.model_name,
+            "learning_rate": ft_best_trial.config["learning_rate"],
+            "weight_decay": ft_best_trial.config["weight_decay"],
+            "batch_size": ft_best_trial.last_result.get("batch_size", -1),
+            "val_metric": best_metric,
+            "checkpoint_path": ft_checkpoint_dst,
+            "m_head": args.m_head,
+        }
+
+        if os.path.exists(optimal_csv_path):
+            # Drop existing record for this model_name and m_head
+            df_existing = df_existing.drop(
+                df_existing[(df_existing["model_name"] == args.model_name) &
+                            (df_existing["m_head"] == args.m_head)].index
+            )
+            optimal_df = pd.concat([df_existing, pd.DataFrame([new_record])], ignore_index=True)
+        else:
+            optimal_df = pd.DataFrame([new_record])
+
+        optimal_df.to_csv(optimal_csv_path, index=False)
+        print(f"✅ Updated optimal FF hyperparams to: {optimal_csv_path}")
+
         
     if args.m_head==1:
         soup_dir = f"checkpoints/{args.dataset_name}/soup/{args.model_name}"
@@ -275,7 +413,7 @@ def main():
                             "trial_id": trial.trial_id,
                             "learning_rate": trial.config["learning_rate"],
                             "weight_decay": trial.config["weight_decay"],
-                            "batch_size": trial.config["batch_size"],
+                            "batch_size": trial.last_result.get("batch_size", -1),
                             "val_metric": trial.last_result[validation_metric],
                             "checkpoint_path": soup_path
                         })

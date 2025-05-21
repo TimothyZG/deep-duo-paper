@@ -69,7 +69,7 @@ def get_model_with_head(
                 if isinstance(layer[i], nn.Linear):
                     in_features = layer[i].in_features
                     layer[i] = build_new_head(in_features, num_classes, m_head)
-                    print(f"Replaced Sequential {attr_name}[{i}] with new head:\n{layer[i]}")
+                    # print(f"Replaced Sequential {attr_name}[{i}] with new head:\n{layer[i]}")
                     return
             print(f"Warning: No nn.Linear found in Sequential '{attr_name}'. Head not replaced.")
 

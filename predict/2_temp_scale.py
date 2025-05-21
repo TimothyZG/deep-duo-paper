@@ -50,34 +50,17 @@ def main():
     # iterate through available predictions
     prediction_paths = [f for f in os.listdir(args.prediction_dir_path) if os.path.isfile(os.path.join(args.prediction_dir_path, f))]
 
-    def get_base_model_and_mhead(full_name):
-        if "head" in full_name:
-            # shallow ensemble
-            m_head = int(full_name.split("_")[-1].split("head")[0])
-            base_name = "_".join(full_name.split("_")[:-1])
-        elif "greedy" in full_name or "uniform" in full_name:
-            # soup
-            m_head = 1
-            base_name = "_".join(full_name.split("_")[:-1])
-        else:
-            # single model
-            m_head = 1
-            base_name = full_name
-        return base_name, m_head
 
     all_results = []
 
     for prediction_csv_path in prediction_paths:
         full_name = prediction_csv_path.split(".csv")[0]
 
-        # Get base model name and number of heads
-        base_name, m_head = get_base_model_and_mhead(full_name)
-
         logits_path = os.path.join(args.prediction_dir_path, prediction_csv_path)
         logits = pd.read_csv(logits_path)
         logits = torch.tensor(logits.values, dtype=torch.float32, device=device)
 
-        target_path = f"prediction/{args.dataset_name}/val/point_prediction.csv"
+        target_path = f"y-prediction/{args.dataset_name}/val/point_prediction.csv"
         target = pd.read_csv(target_path)["target"]
         target = torch.tensor(target.values, dtype=torch.long, device=device)
 

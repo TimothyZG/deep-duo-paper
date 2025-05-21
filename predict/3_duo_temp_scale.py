@@ -69,7 +69,7 @@ def main():
         logits_small = torch.tensor(pred_small.values, dtype=torch.float32, device=device)
         pred_large = pd.read_csv(large_pred_dir)
         logits_large = torch.tensor(pred_large.values, dtype=torch.float32, device=device)
-        target_path = os.path.join(f"prediction/{args.dataset_name}/val","point_prediction.csv")
+        target_path = os.path.join(f"y-prediction/{args.dataset_name}/val","point_prediction.csv")
         target = pd.read_csv(target_path)["target"]
         target = torch.tensor(target.values, dtype=torch.long, device=device)
         opt_temp_l,opt_temp_s = jointly_calibrate_temperature(logits_large, logits_small, target)

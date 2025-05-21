@@ -11,26 +11,6 @@ from load_data.dataloaders import get_dataloaders
 from utils.uncertainty_metrics import evaluate_model
 from load_data.datasets import IWildCamDataset, Caltech256Dataset
 
-def calibrate_and_save(model, val_loader, save_path):
-    model = model.to(next(model.parameters()).device)  # Make sure model is on the correct device
-    model.eval()
-    logits, labels = [], []
-    device = next(model.parameters()).device
-
-    with torch.no_grad():
-        for x, y in tqdm(val_loader, desc="Calibrating"):
-            x, y = x.to(device), y.to(device)
-            output = model.model(x)  # Assumes TempScaleWrapper
-            logits.append(output["logit"] if isinstance(output, dict) else output)
-            labels.append(y)
-
-    logits = torch.cat(logits)
-    labels = torch.cat(labels)
-    model.calibrate_temperature(logits, labels)
-    torch.save(model.state_dict(), save_path)
-    print(f"✅ Saved calibrated model to {save_path}")
-
-
 def load_model_state(model_name, num_classes, source, path):
     model, _ = get_model_with_head(model_name, num_classes, source)
     model.load_state_dict(torch.load(path, map_location="cpu"))
@@ -102,19 +82,45 @@ def make_greedy_soup(paths, model_name, num_classes, source, val_loader, device)
     print(f"✅ Greedy Soup ready. Final val acc: {best_val:.4f} | Models used: {soup_count}")
     return model_ref
 
+def save_logit_ensemble_predictions(top_paths, model_name, num_classes, source, test_loader, device, dataset_name):
+    for i in range(1, len(top_paths) + 1):
+        models = [
+            load_model_state(model_name, num_classes, source, p).to(device).eval()
+            for p in top_paths[:i]
+        ]
+        all_logits = []
+
+        with torch.no_grad():
+            for x, _ in test_loader:
+                x = x.to(device)
+                logits = torch.stack([m(x) for m in models], dim=0).mean(dim=0)  # [B, C]
+                all_logits.append(logits.cpu())  # keep as tensor
+        all_logits = torch.cat(all_logits, dim=0).numpy()
+
+        # Save logits as raw values (no header or index)
+        save_dir = os.path.join("y-prediction", dataset_name, "test", "deep_ensemble")
+        os.makedirs(save_dir, exist_ok=True)
+        save_path = os.path.join(save_dir, f"{model_name}_{i}.csv")
+        pd.DataFrame(all_logits).to_csv(save_path, index=False, header=False)
+        print(f"✅ Saved ensemble logits with {i} models to {save_path}")
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--model_name", required=True)
     parser.add_argument("--dataset_name", required=True)
     parser.add_argument("--source", default="torchvision")
     parser.add_argument("--data_dir", required=True)
+    parser.add_argument("--soup_dir", required=True)
+
     args = parser.parse_args()
-
-    soup_dir = os.path.join("checkpoints", args.dataset_name, "soup", args.model_name)
+    soup_dir = args.soup_dir
+    # soup_dir = os.path.join("checkpoints", args.dataset_name, "soup", args.model_name)
+    save_dir = os.path.join("checkpoints", args.dataset_name, "ff")
+    os.makedirs(save_dir, exist_ok=True)
     trial_csv = os.path.join(soup_dir, f"{args.model_name}_trials.csv")
-    save_root = os.path.join("checkpoints", args.dataset_name, "calibrated_soup")
-    os.makedirs(save_root, exist_ok=True)
-
+    # os.makedirs(soup_dir, exist_ok=True)  # <- save into soup_dir, not calibrated_soup
+    
     df = pd.read_csv(trial_csv)
     df_sorted = df.sort_values(by="val_metric", ascending=False)
     paths = df_sorted["checkpoint_path"].tolist()
@@ -124,16 +130,22 @@ def main():
     num_classes = dataset_cls.num_classes
     _, transforms = get_model_with_head(args.model_name, num_classes, args.source)
     val_loader = get_dataloaders(args.dataset_name, args.data_dir, 64, 4, transforms)["val"]
+    test_loader = get_dataloaders(args.dataset_name, args.data_dir, 64, 4, transforms)["test"]
+    # save_logit_ensemble_predictions(
+    #     paths, args.model_name, num_classes, args.source, test_loader, device, args.dataset_name
+    # )
 
     # Uniform Soup
     uniform_model = make_uniform_soup(paths, args.model_name, num_classes, args.source, val_loader, device).to(device)
-    uniform_model = TempScaleWrapper(uniform_model.to(device))
-    calibrate_and_save(uniform_model, val_loader, os.path.join(save_root, f"{args.model_name}_uniform.pth"))
+    uniform_soup_save_path = os.path.join(save_dir,f"{args.model_name}_uniform.pth")
+    torch.save(uniform_model.state_dict(), uniform_soup_save_path)
+    print(f"✅ Saved uniform soup model to {uniform_soup_save_path}")
 
     # Greedy Soup
     greedy_model = make_greedy_soup(paths, args.model_name, num_classes, args.source, val_loader, device).to(device)
-    greedy_model = TempScaleWrapper(greedy_model.to(device))
-    calibrate_and_save(greedy_model, val_loader, os.path.join(save_root, f"{args.model_name}_greedy.pth"))
+    greedy_soup_save_path = os.path.join(save_dir,f"{args.model_name}_greedy.pth")
+    torch.save(greedy_model.state_dict(), greedy_soup_save_path)
+    print(f"✅ Saved greedy soup model to {greedy_soup_save_path}")
 
 if __name__ == "__main__":
     main()

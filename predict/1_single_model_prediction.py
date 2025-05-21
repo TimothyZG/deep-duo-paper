@@ -37,7 +37,8 @@ def main():
     num_head_ls = [1]*len(model_paths)
     if args.mode == "shallow ensemble":
         num_head_ls = [int(f.split("_")[-1].split("head.pth")[0]) for f in model_paths]
-    for model_path,num_head in zip(model_paths,num_head_ls):
+    total_model = len(model_paths)
+    for i,(model_path,num_head) in enumerate(zip(model_paths,num_head_ls)):
         full_name = model_path.split(".pth")[0]
         # Extract base model_name
         if args.mode in ["shallow ensemble", "soup"]:
@@ -63,20 +64,14 @@ def main():
         if args.mode == "shallow ensemble":
             model = ShallowEnsembleWrapper(model)
         ckpt = torch.load(os.path.join(args.model_dir_path, model_path), map_location=device)
-        # If mode is "soup", temporarily wrap, load, then unwrap
-        if args.mode == "soup":
-            temp_wrapper = TempScaleWrapper(model)
-            temp_wrapper.load_state_dict(ckpt, strict=False)
-            model = temp_wrapper.model  # unwrap
-        else:
-            model.load_state_dict(ckpt, strict=False)
+        model.load_state_dict(ckpt, strict=False)
         model.eval()
         model.to(device)
 
         # 3. Get DataLoader
         dataloaders = get_dataloaders(args.dataset_name, 
                                     args.dataset_dir, 
-                                    batch_size=64, 
+                                    batch_size=32, 
                                     num_workers=4, 
                                     transforms=transforms, 
                                     ood_root_dir=args.ood_dataset_dir)
@@ -96,12 +91,12 @@ def main():
                 logits = torch.cat(logits)
                 labels = torch.cat(labels)
 
-                prediction_save_dir = f"prediction/{args.dataset_name}/{val_set}/raw"
+                prediction_save_dir = f"y-prediction/{args.dataset_name}/{val_set}/raw"
                 os.makedirs(prediction_save_dir,exist_ok=True)
                 prediction_save_path = os.path.join(prediction_save_dir,f"{full_name}.csv")
                 pd.DataFrame(logits.cpu().numpy()).to_csv(prediction_save_path,index=False)
                 
-                point_prediction_save_dir = f"prediction/{args.dataset_name}/{val_set}"
+                point_prediction_save_dir = f"y-prediction/{args.dataset_name}/{val_set}"
                 os.makedirs(point_prediction_save_dir,exist_ok=True)
                 point_prediction_save_path = os.path.join(point_prediction_save_dir,f"point_prediction.csv")
                 point_preds = torch.argmax(logits, dim=1).cpu().numpy()
@@ -116,6 +111,7 @@ def main():
                         full_name: point_preds
                     })
                 df.to_csv(point_prediction_save_path, index=False)
+        print(f"{i}/{total_model} complete, model name = {model_name}")
                 
             
                 

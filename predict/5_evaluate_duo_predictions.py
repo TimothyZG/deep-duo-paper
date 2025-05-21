@@ -6,6 +6,7 @@ import pandas as pd
 import numpy as np
 import torch.nn.functional as F
 from sklearn.metrics import accuracy_score, f1_score, brier_score_loss, log_loss, roc_auc_score
+from tqdm import tqdm
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from utils.uncertainty_metrics import compute_ece, compute_risk_coverage_metrics
@@ -47,7 +48,7 @@ def main():
     parser.add_argument("--dataset_name", required=True)
     parser.add_argument("--duo_csv_path", required=True)
     parser.add_argument("--prediction_root_dir", required=True)
-    parser.add_argument("--save_dir", default="evaluation")
+    parser.add_argument("--save_dir", default="evaluation/eval_res")
     args = parser.parse_args()
 
     temp_single_df = pd.read_csv(f"checkpoints/{args.dataset_name}/temperature_single_model.csv")
@@ -69,6 +70,7 @@ def main():
         all_eval_rows = []
 
         for idx, row in duo_info_df.iterrows():
+            print(f"🔁 Duo {idx} of {len(duo_info_df)}: {row.model_large}+{row.model_small}", flush=True)
             model_large = row["model_large"]
             model_small = row["model_small"]
 
@@ -131,28 +133,13 @@ def main():
             #### 2. Dictatorial Duo (large model's prediction, use different uncertainty)
             preds_dictatorial = logits_large.argmax(dim=1)
 
-            # Use uncertainties from:
-            #   (a) logit average
-            for uncertainty_type, uncertainties in [("softmax_response", uncert_sr), ("entropy", entropy)]:
-                metrics = compute_metrics(probs, preds_dictatorial, labels, uncertainties, num_classes)
-                metrics.update({
-                    "model_large": model_large,
-                    "model_small": model_small,
-                    "mode": "dictatorial_avguncertainty",
-                    "wrapper": "DuoWrapper",
-                    "uncertainty_type": uncertainty_type,
-                    "gflops_large": gflops_large,
-                    "gflops_small": gflops_small,
-                    "gflops_balance": gflops_balance,
-                    "split": split
-                })
-                all_eval_rows.append(metrics)
-
             #   (b) temperature-weighted logits
             logits_weighted = (logits_large / temp_duo_l + logits_small / temp_duo_s) / 2
             probs_weighted = F.softmax(logits_weighted, dim=1)
-            uncert_sr_weighted = 1 - probs_weighted.max(dim=1).values
+            # uncert_sr_weighted = 1 - probs_weighted.max(dim=1).values
             entropy_weighted = -(probs_weighted * (probs_weighted + 1e-10).log()).sum(dim=1)
+            probs_at_large_preds = probs_weighted[torch.arange(len(preds_dictatorial)), preds_dictatorial]
+            uncert_sr_weighted = 1 - probs_at_large_preds
 
             for uncertainty_type, uncertainties in [("softmax_response", uncert_sr_weighted), ("entropy", entropy_weighted)]:
                 metrics = compute_metrics(probs_weighted, preds_dictatorial, labels, uncertainties, num_classes)
