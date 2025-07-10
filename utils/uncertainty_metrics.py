@@ -50,22 +50,25 @@ def compute_risk_coverage_metrics(labels, preds, uncertainties, sac_thresholds=n
     return aurc, eaurc, sac
 
 
-def evaluate_model(model, dataloader, device):
+def evaluate_model(model, dataloader, device, distill=False):
     model.eval()
     all_preds, all_probs, all_logits, all_labels, all_uncertainties = [], [], [], [], []
 
     with torch.no_grad():
-        for x, y in dataloader:
+        for batch in dataloader:
+            if distill:
+                x = batch["student_inputs"]
+                y = batch["labels"]
+            else:
+                x, y = batch
+
             x, y = x.to(device), y.to(device)
             output = model.predict_with_uncertainty(x)
-            logits = output["logit"]
-            probs = output["probs"]
-            preds = output["preds"]
-            uncertainty = output["uncertainty(softmax_response)"]
-            all_preds.append(preds.cpu())
-            all_probs.append(probs.cpu())
-            all_logits.append(logits.cpu())
-            all_uncertainties.append(uncertainty.cpu())
+
+            all_preds.append(output["preds"].cpu())
+            all_probs.append(output["probs"].cpu())
+            all_logits.append(output["logit"].cpu())
+            all_uncertainties.append(output["uncertainty(softmax_response)"].cpu())
             all_labels.append(y.cpu())
 
     return {

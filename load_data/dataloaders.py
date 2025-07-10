@@ -1,3 +1,4 @@
+# dataloaders.py
 from .datasets import IWildCamDataset, Caltech256Dataset, ImageNetDataset,ImageNetV2Dataset
 
 dataset_classes = {

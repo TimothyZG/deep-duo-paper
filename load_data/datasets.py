@@ -59,6 +59,12 @@ class IWildCamDataset (BaseDataset):
         # self.num_classes = self.dataset.n_classes
 
     def get_splits(self, transforms, batch_size, num_workers):
+        if transforms is None:
+            transforms = {
+                'train': None,
+                'val': None,
+                'test': None
+            }
         return {
             "train": get_custom_loader(self.dataset, "train", transforms["train"], batch_size, num_workers, shuffle=True),
             "val": get_custom_loader(self.dataset, "id_val", transforms["val"], batch_size, num_workers),
@@ -73,6 +79,12 @@ class Caltech256Dataset(Dataset):
         self.download = download
 
     def get_splits(self, transforms, batch_size, num_workers,train_perc = 0.7,val_perc = 0.15):
+        if transforms is None:
+            transforms = {
+                'train': None,
+                'val': None,
+                'test': None
+            }
         full_dataset = Caltech256(root=self.root_dir, transform=None, download=self.download)
         train_size = int(train_perc * len(full_dataset))
         val_size = int(val_perc * len(full_dataset))
