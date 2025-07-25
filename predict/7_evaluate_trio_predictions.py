@@ -52,6 +52,7 @@ def main():
 
     temp_single_df = pd.read_csv(f"checkpoints/{args.dataset_name}/temperature_single_model.csv")
     temp_trio_df = pd.read_csv(f"checkpoints/{args.dataset_name}/temperature_trio.csv")
+    temp_duo_df = pd.read_csv(f"checkpoints/{args.dataset_name}/temperature_duo.csv")
     trio_info_df = pd.read_csv(args.trio_csv_path)
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -86,13 +87,17 @@ def main():
             logits_s = torch.tensor(pd.read_csv(paths["small"]).values, dtype=torch.float32, device=device)
             num_classes = logits_l.shape[1]
 
-            temp_l = temp_single_df[temp_single_df["full_name"] == model_l]["temperature"].values[0]
-            temp_m = temp_single_df[temp_single_df["full_name"] == model_m]["temperature"].values[0]
-            temp_s = temp_single_df[temp_single_df["full_name"] == model_s]["temperature"].values[0]
+            # temp_l = temp_single_df[temp_single_df["full_name"] == model_l]["temperature"].values[0]
+            # temp_m = temp_single_df[temp_single_df["full_name"] == model_m]["temperature"].values[0]
+            # temp_s = temp_single_df[temp_single_df["full_name"] == model_s]["temperature"].values[0]
             trio_temp_row = temp_trio_df[
                 (temp_trio_df["model_large"] == model_l) &
                 (temp_trio_df["model_median"] == model_m) &
                 (temp_trio_df["model_small"] == model_s)
+            ]
+            duo_temp_row = temp_duo_df[
+                (temp_duo_df["model_large"] == model_l) &
+                (temp_duo_df["model_small"] == model_m)
             ]
 
             if trio_temp_row.empty:
@@ -102,6 +107,8 @@ def main():
             temp_l_joint = trio_temp_row["temperature_large"].values[0]
             temp_m_joint = trio_temp_row["temperature_median"].values[0]
             temp_s_joint = trio_temp_row["temperature_small"].values[0]
+            temp_l_duo = duo_temp_row["temperature_large"].values[0]
+            temp_m_duo = duo_temp_row["temperature_small"].values[0]
 
             gflops = {
                 "large": row["gflops_large"],
@@ -111,33 +118,37 @@ def main():
                 "gflops_balance_sm": row["gflops_balance_sm"]
             }
 
-            logits_avg = (logits_l / temp_l + logits_m / temp_m + logits_s / temp_s) / 3
-            probs = F.softmax(logits_avg, dim=1)
-            preds = probs.argmax(dim=1)
-            uncert_sr = 1 - probs.max(dim=1).values
-            entropy = -(probs * (probs + 1e-10).log()).sum(dim=1)
+            # logits_avg = (logits_l / temp_l + logits_m / temp_m + logits_s / temp_s) / 3
+            # probs = F.softmax(logits_avg, dim=1)
+            # preds = probs.argmax(dim=1)
+            # uncert_sr = 1 - probs.max(dim=1).values
+            # entropy = -(probs * (probs + 1e-10).log()).sum(dim=1)
 
-            for ut, uncert in [("softmax_response", uncert_sr), ("entropy", entropy)]:
-                metrics = compute_metrics(probs, preds, labels, uncert, num_classes)
-                metrics.update({
-                    "model_large": model_l,
-                    "model_median": model_m,
-                    "model_small": model_s,
-                    "mode": "logit_average",
-                    "wrapper": "TrioWrapper",
-                    "uncertainty_type": ut,
-                    "split": split,
-                    **gflops
-                })
-                all_eval_rows.append(metrics)
+            # for ut, uncert in [("softmax_response", uncert_sr), ("entropy", entropy)]:
+            #     metrics = compute_metrics(probs, preds, labels, uncert, num_classes)
+            #     metrics.update({
+            #         "model_large": model_l,
+            #         "model_median": model_m,
+            #         "model_small": model_s,
+            #         "mode": "logit_average",
+            #         "wrapper": "TrioWrapper",
+            #         "uncertainty_type": ut,
+            #         "split": split,
+            #         **gflops
+            #     })
+            #     all_eval_rows.append(metrics)
 
             logits_joint = (logits_l / temp_l_joint + logits_m / temp_m_joint + logits_s / temp_s_joint) / 3
             probs_joint = F.softmax(logits_joint, dim=1)
+            logits_lm = (logits_l / temp_l_duo + logits_m / temp_m_duo) / 2
+            probs_lm = F.softmax(logits_joint, dim=1)
+            probs_lm = F.softmax(logits_lm,dim=1)
             preds_joint = probs_joint.argmax(dim=1)
+            preds_lm = probs_lm.argmax(dim=1)
             uncert_sr_joint = 1 - probs_joint.max(dim=1).values
-            entropy_joint = -(probs_joint * (probs_joint + 1e-10).log()).sum(dim=1)
+            # entropy_joint = -(probs_joint * (probs_joint + 1e-10).log()).sum(dim=1)
 
-            for ut, uncert in [("softmax_response", uncert_sr_joint), ("entropy", entropy_joint)]:
+            for ut, uncert in [("softmax_response", uncert_sr_joint)]: #, ("entropy", entropy_joint)]:
                 metrics = compute_metrics(probs_joint, preds_joint, labels, uncert, num_classes)
                 metrics.update({
                     "model_large": model_l,
@@ -151,9 +162,22 @@ def main():
                 })
                 all_eval_rows.append(metrics)
                 
+                metrics = compute_metrics(probs_lm, preds_lm, labels, uncert, num_classes)
+                metrics.update({
+                    "model_large": model_l,
+                    "model_median": model_m,
+                    "model_small": model_s,
+                    "mode": "asym_duo_as_dictator",
+                    "wrapper": "TrioWrapper",
+                    "uncertainty_type": ut,
+                    "split": split,
+                    **gflops
+                })
+                all_eval_rows.append(metrics)
+                
             probs_l = F.softmax(logits_l, dim=1)
             preds_l = probs_l.argmax(dim=1)
-            for ut, uncert in [("softmax_response", uncert_sr_joint), ("entropy", entropy_joint)]:
+            for ut, uncert in [("softmax_response", uncert_sr_joint)]: #, ("entropy", entropy_joint)]:
                 metrics = compute_metrics(probs_l, preds_l, labels, uncert, num_classes)
                 metrics.update({
                     "model_large": model_l,
