@@ -50,8 +50,8 @@ class DuoWrapper(nn.Module):
 
     def forward(self, x):
         """Return logits for loss computation or evaluation."""
-        logit_l = self.model_large(x["inputs_teacher_fl"])
-        logit_s = self.model_small(x["inputs_teacher_fs"])
+        logit_l = self.model_large(x["teacher_fl_inputs"])
+        logit_s = self.model_small(x["teacher_fs_inputs"])
         
         if self.mode == "unweighted":
             # Simple average of logits

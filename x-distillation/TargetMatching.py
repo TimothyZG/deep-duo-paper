@@ -47,8 +47,8 @@ class TargetMatching(DistillMethod):
                 optimizer.zero_grad()
                 
                 with torch.no_grad():
-                    teacher_logits = self.teacher({"inputs_teacher_fl":inputs_teacher_fl,
-                                                   "inputs_teacher_fs":inputs_teacher_fs})
+                    teacher_logits = self.teacher({"teacher_fl_inputs":inputs_teacher_fl,
+                                                   "teacher_fs_inputs":inputs_teacher_fs})
                 
                 student_logits = self.student(inputs_student)
                 

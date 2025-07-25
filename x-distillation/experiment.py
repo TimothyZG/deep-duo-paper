@@ -10,7 +10,7 @@ from torch.utils.data import DataLoader
 import torch.nn.functional as F
 import numpy as np
 from sklearn.metrics import f1_score, accuracy_score, brier_score_loss, log_loss, roc_auc_score
-
+import csv
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from load_models.model_loader import get_model_with_head
@@ -18,6 +18,25 @@ from load_data.dataloaders import get_dataloaders,IWildCamDataset, Caltech256Dat
 from load_models.DuoWrapper import DuoWrapper
 from utils.uncertainty_metrics import compute_ece, compute_risk_coverage_metrics
 
+def save_metrics_to_csv(metrics_dict, csv_path, args_dict, prefix):
+    """
+    Save metrics to CSV. Appends if file exists, adds header if new.
+    """
+    # Merge args and metrics for full row
+    row = {"evaluatee":prefix, **{f"{k}": v for k, v in metrics_dict.items()},**args_dict}
+    
+    # Create directory if needed
+    os.makedirs(os.path.dirname(csv_path), exist_ok=True)
+    
+    # Write to CSV
+    file_exists = os.path.exists(csv_path)
+    with open(csv_path, mode='a', newline='') as f:
+        writer = csv.DictWriter(f, fieldnames=row.keys())
+        if not file_exists:
+            writer.writeheader()
+        writer.writerow(row)
+        print(f"res with prefix {prefix} has been saved to the csv file")
+        
 def calibrate_temperature(logits: torch.Tensor, labels: torch.Tensor) -> float:
     original_nll = F.cross_entropy(logits, labels).item()
     print(f"NLL before temperature scaling = {original_nll:.4f}")
@@ -90,11 +109,16 @@ def evaluate_with_temp_scaling(student, val_loader, test_loader, device):
     with torch.no_grad():
         for batch in val_loader:
             if isinstance(batch, dict):
-                x = batch["student_inputs"]
+                x = batch if isinstance(student, DuoWrapper) else batch["student_inputs"]
                 y = batch["labels"]
             else:
                 x, y = batch
-            x, y = x.to(device), y.to(device)
+            if isinstance(x, dict):
+                x = {k: v.to(device) for k, v in x.items()}
+            else:
+                x = x.to(device)
+            y = y.to(device)
+
             logits = student(x)
             logits_list.append(logits)
             labels_list.append(y)
@@ -106,17 +130,20 @@ def evaluate_with_temp_scaling(student, val_loader, test_loader, device):
     print(f"🔧 Optimal temperature: {T:.3f}")
 
     # --- Evaluation on Test Set ---
-    print("🔍 Evaluating on test set with and without temperature scaling...")
     test_logits, test_labels = [], []
 
     with torch.no_grad():
         for batch in test_loader:
             if isinstance(batch, dict):
-                x = batch["student_inputs"]
+                x = batch if isinstance(student, DuoWrapper) else batch["student_inputs"]
                 y = batch["labels"]
             else:
                 x, y = batch
-            x, y = x.to(device), y.to(device)
+            if isinstance(x, dict):
+                x = {k: v.to(device) for k, v in x.items()}
+            else:
+                x = x.to(device)
+            y = y.to(device)
             logits = student(x)
             test_logits.append(logits)
             test_labels.append(y)
@@ -130,24 +157,13 @@ def evaluate_with_temp_scaling(student, val_loader, test_loader, device):
     # Uncertainty measures
     uncert_sr = 1 - probs.max(dim=1).values
     entropy = -(probs * (probs + 1e-10).log()).sum(dim=1)
-
-    print("✅ Raw Model Evaluation:")
-    raw_metrics = compute_metrics(probs, preds, labels_test, uncert_sr, num_classes)
-    for k, v in raw_metrics.items():
-        print(f"  {k}: {v:.4f}")
-
     # Temp-scaled
     probs_temp = F.softmax(logits_test / T, dim=1)
     preds_temp = probs_temp.argmax(dim=1)
     uncert_sr_temp = 1 - probs_temp.max(dim=1).values
     entropy_temp = -(probs_temp * (probs_temp + 1e-10).log()).sum(dim=1)
-
-    print("✅ Temp-Scaled Evaluation:")
     temp_metrics = compute_metrics(probs_temp, preds_temp, labels_test, uncert_sr_temp, num_classes)
-    for k, v in temp_metrics.items():
-        print(f"  {k}: {v:.4f}")
-
-    return {"raw": raw_metrics, "temp_scaled": temp_metrics, "temperature": T}
+    return temp_metrics
     
 
 def create_duo_teacher_with_calibration(teacher_fl_name, teacher_fl_path, teacher_fl_source,
@@ -193,11 +209,6 @@ def create_multi_transform_dataloader(dataset_name, dataset_dir, transforms_dict
     """
     Create a dataloader that applies different transforms to the same data
     """
-    # Get the base dataset without transforms
-    if dataset_name.lower() == 'iwildcam':
-        dataset_cls = IWildCamDataset
-    else:
-        dataset_cls = Caltech256Dataset
     
     # You'll need to modify this based on how your get_dataloaders works
     # This is a placeholder - you might need to access the raw dataset directly
@@ -217,6 +228,7 @@ def create_multi_transform_dataloader(dataset_name, dataset_dir, transforms_dict
 
 # Updated main function section
 def main():
+    curr_dir = os.path.dirname(os.path.abspath(__file__))
     parser = argparse.ArgumentParser()
     parser.add_argument("--dataset_name", type=str, required=True)
     parser.add_argument("--dataset_dir", type=str, required=True)
@@ -238,7 +250,6 @@ def main():
     parser.add_argument("--soft_target_loss_weight", type=float, default=1.0)
     parser.add_argument("--use_multi_transform", action="store_true", 
                        help="Use different transforms for teacher and student")
-    
     args = parser.parse_args()
     
     print("🧾 Arguments:")
@@ -249,6 +260,7 @@ def main():
     
     dataset_cls = IWildCamDataset if args.dataset_name.lower() == 'iwildcam' else Caltech256Dataset
     num_classes = dataset_cls.num_classes
+    if args.dataset_name.lower() == 'imagenet': num_classes=1000
     
     # Load student model first to get transforms
     student, student_transforms = get_model_with_head(
@@ -263,14 +275,17 @@ def main():
     val_dataloaders = get_dataloaders(args.dataset_name, args.dataset_dir,
                                     batch_size=32, num_workers=4, 
                                     transforms=student_transforms)
-    val_loader = val_dataloaders["val"] if "val" in val_dataloaders else val_dataloaders["test"]
+    val_loader_stu = val_dataloaders["val"] if "val" in val_dataloaders else val_dataloaders["test"]
     
     # Create DuoWrapper teacher with calibration
     duo_teacher, teacher_transforms = create_duo_teacher_with_calibration(
         args.teacher_fl_name, args.teacher_fl_path, args.teacher_fl_source,
         args.teacher_fs_name, args.teacher_fs_path, args.teacher_fs_source,
-        num_classes, device, val_loader, mode=args.duo_mode
+        num_classes, device, val_loader_stu, mode=args.duo_mode
     )
+    if args.duo_mode == "asymmetric":
+        print(f"Using calibrated temperatures: Tl={duo_teacher.temp_large:.4f}, Ts={duo_teacher.temp_small:.4f}")
+    
     
     # Create training dataloader
     if args.use_multi_transform:
@@ -281,17 +296,33 @@ def main():
             'student': student_transforms["train"]
         }
         
+        transforms_dict_eval = {
+            'teacher_fl': teacher_transforms[0]["test"],
+            'teacher_fs': teacher_transforms[1]["test"],
+            'student': student_transforms["test"]
+        }
+        
         train_loader = create_multi_transform_dataloader(
             args.dataset_name, args.dataset_dir, transforms_dict_train,
             batch_size=32, num_workers=4, split='train'
         )
         
         val_loader = create_multi_transform_dataloader(
-            args.dataset_name, args.dataset_dir, {'student': student_transforms["test"]},
+            args.dataset_name, args.dataset_dir, transforms_dict_eval,
             batch_size=32, num_workers=4, split='val'
         )
         
         test_loader = create_multi_transform_dataloader(
+            args.dataset_name, args.dataset_dir, transforms_dict_eval,
+            batch_size=32, num_workers=4, split='test'
+        )
+        
+        val_loader_student = create_multi_transform_dataloader(
+            args.dataset_name, args.dataset_dir, {'student': student_transforms["test"]},
+            batch_size=32, num_workers=4, split='val'
+        )
+        
+        test_loader_student = create_multi_transform_dataloader(
             args.dataset_name, args.dataset_dir, {'student': student_transforms["test"]},
             batch_size=32, num_workers=4, split='test'
         )
@@ -301,21 +332,32 @@ def main():
                                     batch_size=32, num_workers=4, 
                                     transforms=student_transforms)
         train_loader = dataloaders["train"]
-        test_loader = dataloaders["test"]
+        test_loader_student = dataloaders["test"]
     
     if args.distillation_method == "TargetMatching":
         tm = TargetMatching(f"{args.distillation_method}", duo_teacher, student, device, 
-                          temperature=args.temperature)
-        print(f"Starting training with DuoWrapper in {args.duo_mode} mode...")
-        if args.duo_mode == "asymmetric":
-            print(f"Using calibrated temperatures: Tl={duo_teacher.temp_large:.4f}, Ts={duo_teacher.temp_small:.4f}")
-        pre_distillation_result = evaluate_with_temp_scaling(tm.student,val_loader, test_loader, device)
-        print(pre_distillation_result)
-        tm.train(args.epochs, args.lr, train_loader, args.soft_target_loss_weight)
-        result = evaluate_with_temp_scaling(tm.distilled_student,val_loader, test_loader, device)
-        print(result)
+            temperature=args.temperature)
     else:
         raise NotImplementedError(f"Unknown Distillation Method encountered: {args.distillation_method}")
 
+    # Pre-distillation Evaluation
+    pre_distillation_student_performance = evaluate_with_temp_scaling(tm.student,val_loader_student, test_loader_student, device)
+    pre_distillation_teacher_performance = evaluate_with_temp_scaling(duo_teacher,val_loader,test_loader,device)
+    pre_distillation_fl_performance = evaluate_with_temp_scaling(duo_teacher.model_large,val_loader_student,test_loader_student,device)
+    pre_distillation_fs_performance = evaluate_with_temp_scaling(duo_teacher.model_small,val_loader_student,test_loader_student,device)
+    csv_name = f"{args.teacher_fl_name}-{args.teacher_fs_name}->{args.student_name}-{args.dataset_name}.csv"
+    csv_path = os.path.join(curr_dir, csv_name)  # You can change "results" to your output folder
+    args_dict = vars(args)
+    save_metrics_to_csv(pre_distillation_student_performance, csv_path, args_dict, "student_pre")
+    save_metrics_to_csv(pre_distillation_teacher_performance, csv_path, args_dict, "duo_teacher_pre")
+    save_metrics_to_csv(pre_distillation_fl_performance, csv_path, args_dict, "teacher_fl_pre")
+    save_metrics_to_csv(pre_distillation_fs_performance, csv_path, args_dict, "teacher_fs_pre")
+
+    # Distillation
+    print(f"Starting training with DuoWrapper in {args.duo_mode} mode...")
+    tm.train(args.epochs, args.lr, train_loader, args.soft_target_loss_weight)
+    result = evaluate_with_temp_scaling(tm.distilled_student,val_loader_student, test_loader_student, device)
+    save_metrics_to_csv(result, csv_path, args_dict, "student_post")
+    
 if __name__ == "__main__":
     main()

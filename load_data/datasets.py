@@ -126,6 +126,13 @@ class ImageNetDataset(Dataset):
         self.download = download
         self.ood_root_dir=ood_root_dir
     def get_splits(self, transforms, batch_size, num_workers,val_perc = 0.05):
+        if transforms is None:
+            transforms = {
+                'train': None,
+                'val': None,
+                'test': None
+            }
+        train_dataset = ImageNet(self.root_dir, split="train", transform=transforms["train"])
         full_dataset = ImageNet(self.root_dir, split="val", transform=None)
         generator = torch.Generator().manual_seed(42)
         val_size = int(val_perc * len(full_dataset))
@@ -152,7 +159,9 @@ class ImageNetDataset(Dataset):
             )
         # End New
         return {
-            "train": None,
+            "train": DataLoader(train_dataset, batch_size=batch_size, shuffle=True,
+                            num_workers=num_workers, pin_memory=True,
+                            prefetch_factor=4, persistent_workers=True),
             "val": DataLoader(val_dataset,batch_size=batch_size,
                               shuffle=False,num_workers=num_workers,
                               pin_memory=True,prefetch_factor=4,
